@@ -1,0 +1,6 @@
+node_modules
+.git
+.github
+data/*.json
+*.md
+.DS_Store
