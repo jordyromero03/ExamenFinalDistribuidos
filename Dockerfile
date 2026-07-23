@@ -15,7 +15,7 @@ ENV NODE_ENV=production
 ENV PORT=3000
 
 COPY package*.json ./
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev && rm -rf /usr/local/lib/node_modules/npm
 
 COPY --from=build /app/server.js ./server.js
 COPY --from=build /app/db.js ./db.js
