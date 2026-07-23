@@ -36,13 +36,15 @@ spec:
                 secretKeyRef:
                   name: inventario-secrets
                   key: API_KEY
+            - name: STARTUP_DELAY_SECONDS
+              value: "15"
           readinessProbe:
             httpGet:
               path: /health
               port: 3000
-            initialDelaySeconds: 2
+            initialDelaySeconds: 5
             periodSeconds: 3
-            failureThreshold: 3
+            failureThreshold: 6
           livenessProbe:
             httpGet:
               path: /health
