@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inventario-app-green
+  labels:
+    app: inventario-app
+    slot: green
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: inventario-app
+      slot: green
+  template:
+    metadata:
+      labels:
+        app: inventario-app
+        slot: green
+    spec:
+      containers:
+        - name: inventario-app
+          image: ghcr.io/jordyromero03/examenfinaldistribuidos:latest
+          ports:
+            - containerPort: 3000
+          env:
+            - name: APP_VERSION
+              value: "v2"
+            - name: APP_COLOR
+              value: "green"
+          readinessProbe:
+            httpGet: { path: /health, port: 3000}
+            initialDelaySeconds: 2
+            periodSeconds: 3
+          livenessProbe:
+            httpGet: { path: /health, port: 3000}
+            initialDelaySeconds: 5
+            periodSeconds: 10
