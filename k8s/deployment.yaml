@@ -18,6 +18,7 @@ spec:
     metadata:
       labels:
         app: inventario-app
+        slot: stable
     spec:
       containers:
         - name: inventario-app
