@@ -1,0 +1,142 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage{fontspec}
+\usepackage{polyglossia}
+\setmainlanguage{spanish}
+\setmainfont{Liberation Serif}
+\setmonofont{Liberation Mono}[Scale=0.85]
+
+\usepackage[a4paper,margin=2.2cm]{geometry}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{titlesec}
+
+\definecolor{brand}{RGB}{140,70,20}
+
+\titleformat{\section}{\normalfont\large\bfseries\color{brand}}{\thesection}{0.6em}{}
+\titlespacing*{\section}{0pt}{1.1em}{0.4em}
+\setlist[itemize]{topsep=2pt,itemsep=2pt,parsep=0pt,leftmargin=1.4em}
+
+\hypersetup{colorlinks=true,linkcolor=brand,urlcolor=brand}
+
+\pagenumbering{gobble}
+
+\title{\vspace{-1.5em}\color{brand}\textbf{Informe de reflexión: trabajo final CI/CD}\\[2pt]\large Sistemas Distribuidos, Parte II}
+\author{Jordy Romero \and Nayeli Barbecho}
+\date{24 de julio de 2026}
+
+\begin{document}
+\maketitle
+\vspace{-1.2em}
+
+Repositorio: \url{https://github.com/jordyromero03/ExamenFinalDistribuidos}. Contiene el
+código, los manifiestos, el README con evidencia real de cada etapa y la bitácora completa de
+despliegues en \texttt{docs/deploy-log.md}.
+
+\section{Justificación de la estrategia de despliegue elegida: Blue-Green}
+
+Se descartó Canary a favor de Blue-Green por el perfil concreto de \texttt{inventario-app}: es
+una aplicación de bajo tráfico, sin usuarios reales en producción (un ejercicio de laboratorio),
+donde el objetivo pedagógico es demostrar un mecanismo de corte de tráfico controlado y
+verificable, no optimizar el riesgo de exponer una fracción de usuarios reales a una versión sin
+probar, que es la ventaja real que justificaría un Canary. Blue-Green, en cambio, se apoya
+puramente en recursos nativos de Kubernetes (dos \texttt{Deployment} y un \texttt{Service} cuyo
+\texttt{selector} se cambia), y su corte es instantáneo y binario: se puede demostrar con un solo
+\texttt{curl} antes y después del \texttt{kubectl patch}, sin necesitar decenas de peticiones
+repetidas para confirmar estadísticamente un reparto proporcional como exige Canary. Para el
+caso de esta app, esa simplicidad de verificación pesó más que la ventaja de exposición gradual
+que ofrece Canary.
+
+\section{Observación: persistencia de datos}
+
+\texttt{inventario-app} guarda su catálogo en un archivo JSON local
+(\texttt{data/products.json}), sin ningún \texttt{PersistentVolume} montado. Con 2 réplicas del
+Deployment base, cada pod tiene su propia copia aislada de ese archivo: un producto creado por
+una petición puede no aparecer en la siguiente lectura si el \texttt{Service} la enruta a otro
+pod, sin que se haya perdido nada; simplemente el otro pod nunca se enteró de que existía. Al
+recrear un pod (\texttt{kubectl delete pod}), el reemplazo arranca desde cero con los 3
+productos semilla del código, porque la capa de escritura donde vivía el dato nuevo se destruye
+junto con el contenedor viejo. No es un error de la aplicación, sino la consecuencia esperada de
+usar disco local en un entorno donde los pods son efímeros por diseño. En un sistema real, ese
+estado se externalizaría a una base de datos con su propio volumen o a un servicio gestionado
+fuera del clúster.
+
+\section{Problemas reales encontrados y cómo se resolvieron}
+
+\begin{itemize}
+  \item \textbf{Tag de acción de terceros mal escrito.} \texttt{aquasecurity/trivy-action@0.24.0}
+    hizo fallar el pipeline dos veces seguidas (\texttt{Unable to resolve action}), porque los
+    tags de esa acción llevan el prefijo \texttt{v} (\texttt{v0.24.0}). Se corrigió consultando
+    los tags reales con \texttt{gh api}.
+  \item \textbf{CVE real en una dependencia transitiva.} Al bajar \texttt{express} a
+    \texttt{4.17.1} a propósito para probar el escaneo de Trivy, este encontró
+    \texttt{CVE-2026-59873} (CRITICAL) en \texttt{tar}, una dependencia transitiva de
+    \texttt{express} y no del propio paquete. Esto confirma que un escaneo de imagen detecta
+    riesgos que revisar solo el \texttt{package.json} directo no vería.
+  \item \textbf{CVE en la imagen base, no en la app.} Tras revertir \texttt{express}, el mismo
+    CVE de \texttt{tar} seguía apareciendo. Se investigó hasta encontrar que venía empaquetado
+    dentro del propio \texttt{npm} que trae \texttt{node:20-alpine}, y ni siquiera una imagen
+    base más nueva (\texttt{node:22-alpine}) lo tenía parchado todavía. Se resolvió eliminando
+    \texttt{npm} de la etapa final del \texttt{Dockerfile}, ya que la aplicación no lo necesita
+    en tiempo de ejecución.
+  \item \textbf{Selector de Service compartido entre Deployments.} El \texttt{Service} base y
+    los pods de Blue-Green compartían la label \texttt{app: inventario-app}, así que el Service
+    base terminaba repartiendo tráfico también hacia pods de Blue-Green. Se resolvió agregando
+    una label distintiva (\texttt{slot: stable}) al Deployment base y a su Service.
+  \item \textbf{Arranque lento sin aplicar de verdad.} Al agregar \texttt{STARTUP\_DELAY\_SECONDS},
+    dos intentos fallaron por separado: primero faltaba la variable de entorno en el manifiesto,
+    y después el código de \texttt{server.js} nunca se había commiteado ni pusheado, por lo que
+    la imagen en el clúster seguía siendo la anterior. Ambos casos se corrigieron y se
+    confirmaron con la transición real de \texttt{0/1} a \texttt{1/1} tomando los
+    $\sim$15 segundos esperados.
+\end{itemize}
+
+\section{Métricas DORA}
+
+Calculadas a partir de \texttt{docs/deploy-log.md}, con timestamps reales de commits, runs de
+GitHub Actions y \texttt{ReplicaSet} creados en el clúster, no con estimaciones.
+
+\begin{center}
+\begin{tabular}{@{}p{4.3cm}p{3.2cm}p{7cm}@{}}
+\toprule
+\textbf{Métrica} & \textbf{Valor real} & \textbf{Cómo se calculó} \\
+\midrule
+Lead time for changes & 2 min 14 s / 13 min 54 s & Dos cambios de código: tiempo entre el commit y el nuevo \texttt{ReplicaSet} confirmado en el clúster. \\
+Frecuencia de despliegue & $\approx$ 5/día & 10 promociones reales al clúster en 2 días de trabajo. \\
+Change failure rate & 40\% & 4 de 10 runs de pipeline fallaron y necesitaron un commit de corrección posterior. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection*{Ubicación en la tabla de niveles DORA (reportes Accelerate State of DevOps, Google/DORA)}
+
+\begin{center}
+\begin{tabular}{@{}p{2.2cm}p{4.5cm}p{3.3cm}p{3.3cm}@{}}
+\toprule
+\textbf{Nivel} & \textbf{Deployment frequency} & \textbf{Lead time} & \textbf{Change failure rate} \\
+\midrule
+Elite & Bajo demanda (varias/día) & Menos de 1 hora & 0--15\% \\
+Alto & 1/semana a 1/mes & 1 día a 1 semana & 16--30\% \\
+Medio & 1/mes a 1/6 meses & 1 mes a 6 meses & 16--30\% \\
+\textbf{Bajo} & Menos de 1/6 meses & Más de 6 meses & \textbf{16--30\%} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Por frecuencia de despliegue ($\sim$5/día) y lead time (en minutos), el proyecto se ubicaría en
+el nivel \textbf{Elite}. El \textbf{change failure rate de 40\% cae en el nivel más bajo} de la
+tabla. Esta combinación no es contradictoria: DORA mide equipos maduros operando en producción
+real durante meses, mientras que este trabajo lo hizo una sola persona, en 2 días, aprendiendo
+Kubernetes, Docker y GitHub Actions por primera vez, con la consigna pidiendo explícitamente
+provocar fallos a propósito (en Trivy y en readiness) para demostrar que el pipeline los detecta.
+Cada fallo real tuvo una causa distinta y una corrección concreta documentada. De hecho, la
+métrica que más se acerca a reflejar experiencia real, el change failure rate, es también la que
+más rápido mejoraría con historia: descontando los 2 fallos repetidos por el mismo bug del tag
+de Trivy (que en un intento único habría sido 1 fallo, no 2), el failure rate de causas distintas
+baja a 3/9, aproximadamente 33\%, todavía bajo pero visiblemente más cerca del nivel Medio. La
+velocidad, en cambio, sí refleja algo genuino: con el principio de build once, promote many y un
+pipeline de fail fast bien armado, promover un cambio real al clúster tomó minutos, no días.
+
+\end{document}
